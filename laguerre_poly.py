@@ -1,10 +1,15 @@
-import numpy as np
-import jax as jx
-from scipy.special import genlaguerre
-from matplotlib import pyplot as plt
-import keras
-from keras.models import Sequential, Model
+import os
+
+os.environ["KERAS_BACKEND"] = "jax"
+
+import jax
 import jax.numpy as jnp
+import keras
+import numpy as np
+from jax.scipy.special import gammaln, factorial  # for generalized Laguerre
+from keras.models import Sequential, Model
+from matplotlib import pyplot as plt
+from scipy.special import genlaguerre
 
 lay = keras.layers
 
@@ -142,25 +147,32 @@ def generate_dataset(N_samples=5000, n_res=32):
     Coefficients are normalized to unit total power (sum of |c|^2 = 1).
     Uses global coordinate grids r, theta for phase synthesis.
     """
-    X = np.zeros((N_samples, n_res, n_res, 1), dtype=np.float32)
+    # Generate all coefficients at once
+    coeffs_real = np.random.randn(N_samples, N_COEFF)
+    coeffs_imag = np.random.randn(N_samples, N_COEFF)
+    coeffs_complex = coeffs_real + 1j * coeffs_imag
+
+    # Normalize all coefficients to unit power
+    norms = np.sqrt(np.sum(np.abs(coeffs_complex) ** 2, axis=1, keepdims=True))
+    coeffs_complex /= norms
+
+    # Interleave real and imaginary parts
     Y = np.zeros((N_samples, 2 * N_COEFF), dtype=np.float32)
+    Y[:, 0::2] = coeffs_complex.real
+    Y[:, 1::2] = coeffs_complex.imag
+
+    # Vectorized phase synthesis
+    X = np.zeros((N_samples, n_res, n_res, 1), dtype=np.float32)
 
     for i in range(N_samples):
-        coeffs = np.random.randn(N_COEFF) + 1j * np.random.randn(N_COEFF)
-
-        coeffs /= np.sqrt(np.sum(np.abs(coeffs) ** 2))
-
-        phase = synthesize_phase(np.stack([coeffs.real, coeffs.imag], axis=1).ravel())
-
+        phase = synthesize_phase(coeffs_complex[i])
         X[i, ..., 0] = phase
-        Y[i, 0::2] = coeffs.real
-        Y[i, 1::2] = coeffs.imag
 
     return X, Y
 
 
-X_train, Y_train = generate_dataset(20000)
-X_val, Y_val = generate_dataset(1000)
+X_train, Y_train = generate_dataset(100000)
+X_val, Y_val = generate_dataset(10000)
 
 
 fig, axes = plt.subplots(4, 4, figsize=(14, 12))
@@ -262,15 +274,6 @@ class JAXL2Norm(lay.Layer):
         return config
 
 
-import jax
-import jax.numpy as jnp
-from jax.scipy.special import gammaln  # for generalized Laguerre
-
-
-# --- LG mode indices ---
-MODES = [(p, l) for p in range(5) for l in range(-4, 5) if 2 * p + abs(l) <= 4]
-
-
 # --- Generalized Laguerre polynomial using explicit formula ---
 
 
@@ -297,10 +300,7 @@ class LGPhaseLayer(lay.Layer):
             return jnp.exp(gammaln(N + 1) - gammaln(k + 1) - gammaln(N - k + 1))
 
         coeffs = jnp.array(
-            [
-                ((-1) ** m * comb(p + l, p - m) / jax.scipy.special.factorial(m))
-                for m in range(p + 1)
-            ]
+            [((-1) ** m * comb(p + l, p - m) / factorial(m)) for m in range(p + 1)]
         )
         powers = jnp.array([x**m for m in range(p + 1)])
 
@@ -363,26 +363,29 @@ phase_model = Model(inputs=inp, outputs={"out_image": out_image, "coeffs": coeff
 # phase_model = Model(inputs=inp, outputs=out_image)
 
 
-def complex_mse(y_true, y_pred):
-    return jnp.square(jnp.abs(y_true - y_pred)).mean()
-
+opt = Adam(1e-4, amsgrad=True)
 
 phase_model.compile(
-    optimizer="adam",
+    optimizer=opt,
     loss={"out_image": "mse", "coeffs": "mse"},
-    loss_weights={"out_image": 0.0, "coeffs": 1.0},
+    loss_weights={"out_image": 1.0, "coeffs": 0},
 )
 
 phase_model.summary()
 
+history = None
 
-phase_model.fit(
-    X_train,
-    {"out_image": X_train, "coeffs": Y_train},
-    validation_split=0.1,
-    epochs=10,
-    batch_size=64,
-)
+try:
+    history = phase_model.fit(
+        X_train,
+        {"out_image": X_train, "coeffs": Y_train},
+        validation_split=0.1,
+        epochs=50,
+        batch_size=64,
+    )
+
+except KeyboardInterrupt:
+    print("\nTraining interrupted by user.")
 
 
 # pick one validation example
@@ -391,7 +394,7 @@ phase_reco = phase_model.predict(X_val[:])
 print(phase_reco["coeffs"].dtype)
 
 
-for i in range(3):
+for i in range(4):
     fig, axes = plt.subplots(1, 2, figsize=(7, 3))
     axes = axes.ravel()
     phase = X_val[i, ..., 0]
@@ -404,14 +407,14 @@ for i in range(3):
     plot_image(rec_image, coeff_rec, axes[1], fig)
     axes[1].set_title("predicted image")
     plt.tight_layout()
+    plt.savefig(f"pred_example_{i}.png", dpi=300)
+
 plt.show()
-
-
 
 
 coeffs_pred = phase_reco["coeffs"]
 
-for i in range(3):
+for i in range(4):
     fig, axes = plt.subplots(1, 2, figsize=(7, 3))
     axes = axes.ravel()
     phase = X_val[i, ..., 0]
@@ -422,8 +425,9 @@ for i in range(3):
     c_pred = coeffs_pred[i, 0::2] + 1j * coeffs_pred[i, 1::2]
     phase_reco__ = synthesize_phase(c_pred)
     plot_image(phase_reco__, c_pred, axes[1], fig)
-    axes[1].set_title("predicted image")
+    axes[1].set_title("reconstructed image from coeffs")
     plt.tight_layout()
+    plt.savefig(f"rec_coeff_example_{i}.png", dpi=300)
 
 plt.show()
 plt.close("all")
@@ -441,27 +445,33 @@ mode_model = Sequential(
         lay.Conv2D(128, 3, activation="elu", padding="same"),
         lay.Conv2D(128, 3, activation="elu", padding="same"),
         lay.AvgPool2D((2, 2)),
-        lay.Conv2D(128, 3, activation="elu", padding="same"),
+        lay.Conv2D(256, 3, activation="elu", padding="same"),
+        lay.Conv2D(256, 3, activation="elu", padding="same"),
         lay.GlobalAveragePooling2D(),
         lay.Dense(128, activation="elu"),
-        lay.Dropout(0.3),
         lay.Dense(2 * N_COEFF),
-        JAXL2Norm(name="coeffs")
+        JAXL2Norm(name="coeffs"),
     ]
 )
 
+from keras.optimizers import Adam
+
+opt = Adam(1e-4, amsgrad=True)
+
 mode_model.compile(
-    optimizer="adam",
+    optimizer=opt,
     loss="mse",
 )
 
 
 mode_model.summary()
-
-
-mode_model.fit(
-    X_train, Y_train, validation_split=0.1, epochs=10, batch_size=64
-)
+history = None
+try:
+    history = mode_model.fit(
+        X_train, Y_train, validation_split=0.1, epochs=50, batch_size=64
+    )
+except KeyboardInterrupt:
+    print("\nTraining interrupted by user.")
 
 
 # pick one validation example
@@ -473,7 +483,7 @@ for i in range(5):
     fig, axes = plt.subplots(1, 2, figsize=(7, 3))
     axes = axes.ravel()
     phase = X_val[i, ..., 0]
-    coeffs = Y_val
+    coeffs = Y_val[i, 0::2] + 1j * Y_val[i, 1::2]
     plot_image(phase, coeffs, axes[0], fig)
     axes[0].set_title("input image")
 

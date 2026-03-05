@@ -1,0 +1,21 @@
+name: laguerre_learning
+channels:
+  - conda-forge
+  - nvidia
+  - defaults
+
+dependencies:
+  # Python
+  - python=3.14
+
+  # Core scientific computing
+  - numpy
+  - scipy
+  - matplotlib
+
+  # JAX with CUDA support (install via pip for better CUDA integration)
+  - pip
+  - pip:
+      - jax[cuda13]
+      - jaxlib
+      - keras>=3.0
