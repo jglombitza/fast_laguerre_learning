@@ -13,6 +13,21 @@ Laguerre-Gaussian modes are solutions to the paraxial wave equation with helical
    - Direct image-to-image reconstruction with embedded LG synthesis
    - Coefficient prediction with external reconstruction
 
+Example reconstructions showing input phase patterns and model predictions:
+The models successfully learn to decompose complex phase patterns into their constituent Laguerre-Gaussian modes and reconstruct the original images with different fidelity (no finetuning yet).
+
+### Coefficient-Based Reconstruction
+Coefficient prediction with external reconstruction. Shown image is generated using scipy.
+![Coefficient Reconstruction Example (supervised)](coeff_example_0.png)
+
+
+### Phase Model Reconstruction
+Direct image-to-image reconstruction with embedded LG synthesis. Predicted image is generated using jax layer.
+
+![Phase Model Example (unsupervised)](pred_example_phase_model_0.png)
+
+
+
 ## Key Features
 
 - Custom `LGPhaseLayer`: Differentiable LG mode synthesis using JAX
@@ -107,8 +122,6 @@ This will:
 2. Display example phase patterns with mode compositions
 3. Train two models (phase + mode model)
 4. Display reconstruction examples interactively
-
-
 
 ## Model Architectures
 
